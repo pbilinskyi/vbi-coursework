@@ -189,27 +189,24 @@ class ObjectDetector:
 
 
     def compute_weights(self, markers, states):
-        logger.info("Computing weights for state 2 markers")
+        """Обчислення ваг для маркерів стану 2 з використанням логарифмічної шкали."""
+        logger.info("Computing weights for state 2 markers with logarithmic scaling")
         
+        # Підготовка даних (той самий код, що й раніше)
         state2_mask = (states == 2)
         if not np.any(state2_mask):
             logger.warning("No markers in state 2, returning empty weights array")
             return np.array([])
         
         markers_state2 = markers[state2_mask]
-        logger.debug(f"Processing {len(markers_state2)} markers in state 2")
-
-        # Перетворюємо координати в полярні
         x = markers_state2[:, 0]
         y = markers_state2[:, 1]
         amplitudes = markers_state2[:, 2]
-        logger.debug(f"Amplitudes range: [{np.min(amplitudes):.2f}, {np.max(amplitudes):.2f}], mean: {np.mean(amplitudes):.2f}")
-        
         r_signals = np.sqrt(x ** 2 + y ** 2)
         theta_signals = np.arctan2(y, x)
         theta_signals = np.where(theta_signals < 0, theta_signals + 2 * np.pi, theta_signals)
         
-        # Grid parameters setup
+        # Параметри сітки та моделі (той самий код)
         num_r = 50
         num_theta = 120
         r_edges = np.linspace(0, self.search_radius, num_r + 1)
@@ -217,97 +214,54 @@ class ObjectDetector:
         r_centers = (r_edges[:-1] + r_edges[1:]) / 2
         theta_centers = (theta_edges[:-1] + theta_edges[1:]) / 2
         
-        # Параметри ядра та правдоподібності
         a = 3.0  # параметр для експоненційного ядра
-        logger.debug(f"Kernel parameter a: {a}")
         
+        # Обчислення sigma
         noise_mask = (states != 2)
         if not np.any(noise_mask):
             sigma = 200
-            logger.debug(f"Using default sigma: {sigma} (no noise markers found)")
         else:
             noise_amplitudes = markers[noise_mask][:, 2]
             sigma = np.sum(noise_amplitudes) / len(noise_amplitudes)
-            logger.debug(f"Computed sigma from noise: {sigma:.2f} (from {len(noise_amplitudes)} markers)")
-        
-        # Debugging check only - doesn't change the value
-        if sigma < 1.0:
-            logger.warning(f"Sigma is very small ({sigma:.6f}), which may cause numerical issues")
         
         I_k = (self.object_amplitude_range[0] + self.object_amplitude_range[1]) / 2
-        logger.debug(f"Expected object amplitude I_k: {I_k}")
-        
         z_grid = np.zeros((num_r, num_theta))
         R_okil = 4
         
-        # ----- Обчислення z_grid ------
-        logger.debug(f"Computing z_grid with neighborhood radius R_okil = {R_okil}")
-        
-        # Count cells with signals for debugging
-        cells_with_signals = 0
-        max_signals_per_cell = 0
-        
+        # Обчислення z_grid (той самий код, як раніше)
         for i in range(num_r):
             for j in range(num_theta):
                 r_c = r_centers[i]
                 theta_c = theta_centers[j]
                 
-                # Calculate distances
                 d = np.sqrt(
                     r_c ** 2
                     + r_signals ** 2
                     - 2 * r_c * r_signals * np.cos(theta_c - theta_signals)
                 )
                 
-                # Select signals within neighborhood
                 mask = d <= R_okil
                 n_ij = np.count_nonzero(mask)
-                
                 if n_ij == 0:
                     continue
-                    
-                cells_with_signals += 1
-                max_signals_per_cell = max(max_signals_per_cell, n_ij)
                 
-                # Calculate average amplitude
                 A_mask = amplitudes[mask]
                 A_avg = A_mask.mean()
                 
-                # Compute kernel m_k
                 m_k = np.exp(-a * d[mask] ** 2 / (num_r * num_theta))
                 
-                # Compute z_ij
-                z_value = (1 / np.sqrt(n_ij)) * np.sum((A_mask - A_avg) * m_k)
-                z_grid[i, j] = z_value
+                z_grid[i, j] = (1 / np.sqrt(n_ij)) * np.sum((A_mask - A_avg) * m_k)
         
-        # Detailed statistics of z_grid for debugging
-        z_nonzero = z_grid[z_grid != 0]
-        logger.debug(f"z_grid statistics: {cells_with_signals}/{num_r*num_theta} cells have signals")
-        logger.debug(f"Maximum number of signals in a cell: {max_signals_per_cell}")
+        # ------- КЛЮЧОВІ ЗМІНИ: ЛОГАРИФМІЧНЕ ОБЧИСЛЕННЯ ВАГ -------
+        logger.debug("Computing weights using logarithmic scale")
+        log_weights = np.zeros(len(markers_state2))
         
-        if len(z_nonzero) > 0:
-            logger.debug(f"z_grid non-zero values - min: {np.min(z_nonzero):.2f}, max: {np.max(z_nonzero):.2f}, mean: {np.mean(z_nonzero):.2f}")
-        else:
-            logger.warning("z_grid has no non-zero values!")
-        
-        # ----- Обчислення ваг ------
-        logger.debug(f"Computing weights with sigma={sigma:.2f}, I_k={I_k:.2f}")
-        
-        marker_weights = np.zeros(len(markers_state2))
-        
-        # Track extreme values that may cause overflow
-        max_exponent = float('-inf')
-        min_exponent = float('inf')
-        max_mu_ij = float('-inf')
-        max_z_diff = float('-inf')
-        
-        # Original weight calculation with added logging
         for idx in range(len(markers_state2)):
             r = r_signals[idx]
             theta = theta_signals[idx]
             
-            # Initialize L
-            L = 1.0
+            # Ініціалізуємо логарифм правдоподібності замість самої правдоподібності
+            log_L = 0.0
             
             for i in range(num_r):
                 for j in range(num_theta):
@@ -325,54 +279,39 @@ class ObjectDetector:
                         
                     mu_ij = I_k * h_ij
                     
-                    # This is where overflow happens
+                    # Замість множення експонент додаємо їх показники
                     exponent = (mu_ij * (mu_ij - 2 * z_grid[i, j])) / (2 * sigma ** 2)
-                    
-                    # Track extreme values for logging only
-                    max_exponent = max(max_exponent, exponent)
-                    min_exponent = min(min_exponent, exponent)
-                    max_mu_ij = max(max_mu_ij, mu_ij)
-                    max_z_diff = max(max_z_diff, abs(mu_ij - 2 * z_grid[i, j]))
-                    
-                    # Check if exponent is too large (for logging only)
-                    if exponent > 700:  # np.exp(710) is roughly the limit before overflow
-                        logger.warning(f"Potential overflow detected! Exponent = {exponent:.2f}")
-                        logger.warning(f"Components: mu_ij={mu_ij:.2f}, z_grid[{i},{j}]={z_grid[i,j]:.2f}, sigma²={sigma**2:.2f}")
-                        # Don't break or modify L, just log the warning
-                    
-                    # Original computation - no changes
-                    L *= np.exp(exponent)
+                    log_L += exponent  # Ключова зміна тут!
             
-            marker_weights[idx] = L
+            log_weights[idx] = log_L
         
-        # Log statistics about weight calculation
-        logger.debug(f"Exponent range: [{min_exponent:.2f}, {max_exponent:.2f}]")
-        logger.debug(f"Max mu_ij: {max_mu_ij:.2f}, Max |mu_ij - 2*z_grid|: {max_z_diff:.2f}")
-        logger.debug(f"Sigma squared: {sigma**2:.2f}")
+        # ------- НОРМАЛІЗАЦІЯ ЛОГАРИФМІЧНИХ ВАГ -------
+        # Використання "log-sum-exp trick" для уникнення переповнення при перетворенні назад
         
-        # Check if we have any infinite weights (for logging only)
-        inf_weights = np.isinf(marker_weights)
-        if np.any(inf_weights):
-            logger.warning(f"{np.sum(inf_weights)} markers have infinite weights")
-        
-        # Original normalization
-        total_weight = np.sum(marker_weights)
-        if total_weight > 0:
-            marker_weights /= total_weight
-            logger.debug(f"Normalized weights - sum: {np.sum(marker_weights):.6f}")
+        # 1. Знаходимо максимальне значення log_weight
+        if len(log_weights) > 0:
+            max_log_weight = np.max(log_weights)
+            
+            # 2. Віднімаємо максимальне значення для числової стабільності
+            shifted_log_weights = log_weights - max_log_weight
+            
+            # 3. Перетворюємо назад до звичайної шкали
+            weights = np.exp(shifted_log_weights)
+            
+            # 4. Нормалізуємо
+            total_weight = np.sum(weights)
+            if total_weight > 0:
+                weights /= total_weight
+            else:
+                weights = np.ones(len(weights)) / len(weights)
         else:
-            logger.warning(f"Total weight is {total_weight}, using uniform weights")
-            marker_weights = np.ones(len(marker_weights)) / len(marker_weights)
+            weights = np.array([])
         
-        # Final weight statistics
-        if len(marker_weights) > 0:
-            min_w = np.min(marker_weights)
-            max_w = np.max(marker_weights)
-            entropy = -np.sum(marker_weights * np.log(marker_weights + 1e-10))
-            logger.info(f"Min weight: {min_w:.8f}, Max weight: {max_w:.8f}")
-            logger.info(f"Weight entropy: {entropy:.4f}")
+        logger.debug(f"Log-weights range: [{np.min(log_weights) if len(log_weights) > 0 else 'N/A'}, "
+                    f"{np.max(log_weights) if len(log_weights) > 0 else 'N/A'}]")
+        logger.debug(f"Normalized weights sum: {np.sum(weights):.6f}")
         
-        return marker_weights
+        return weights
 
 
 
