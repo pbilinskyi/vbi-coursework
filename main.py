@@ -32,8 +32,8 @@ matplotlib.set_loglevel('WARNING')  # або 'ERROR' для ще більш су
 
 class ObjectDetector:
     def __init__(self, search_radius=10, N0=100, M=200, noise_std=0.1,
-                 prob_change_state=0.1, object_pos=(5, 1.75*np.pi),
-                 object_amplitude_range=(1000,1500), num_object_signals=20, amplitude_range=(200,1200)):
+                 prob_change_state=0.1, object_pos=(5, 1.65*np.pi),
+                 object_amplitude_range=(1500,2000), num_object_signals=100, amplitude_range=(200,800)):
         if amplitude_range is None:
             amplitude_range = [200, 1200]
         self.search_radius = search_radius
@@ -610,8 +610,8 @@ class ObjectDetector:
         theta_signals = np.where(theta_signals < 0, theta_signals + 2 * np.pi, theta_signals)
         
         # Параметри сітки та моделі (той самий код)
-        num_r = 50
-        num_theta = 120
+        num_r = 40
+        num_theta = 40
         r_edges = np.linspace(0, self.search_radius, num_r + 1)
         theta_edges = np.linspace(0, 2 * np.pi, num_theta + 1)
         r_centers = (r_edges[:-1] + r_edges[1:]) / 2
@@ -625,7 +625,7 @@ class ObjectDetector:
         #     sigma = 200
         # else:
         #     noise_amplitudes = markers[noise_mask][:, 2]
-        #     sigma = np.sum(noise_amplitudes) / len(noise_amplitudes)
+        #     sigma = np.sum(noise_amplitudes) / len(noise_amplitudes)  # CHECK PLEASE
         noise_mask = (states != 2)
         if np.any(noise_mask):
             noise_amplitudes = markers[noise_mask][:, 2]
@@ -649,9 +649,10 @@ class ObjectDetector:
         
         I_k = (self.object_amplitude_range[0] + self.object_amplitude_range[1]) / 2
         z_grid = np.zeros((num_r, num_theta))
-        R_okil = 4
+        R_okil = 100  # all points
         
         # Обчислення z_grid (той самий код, як раніше)
+        z_computation_details = {}
         for i in range(num_r):
             for j in range(num_theta):
                 r_c = r_centers[i]
@@ -663,7 +664,8 @@ class ObjectDetector:
                     - 2 * r_c * r_signals * np.cos(theta_c - theta_signals)
                 )
                 
-                mask = d <= R_okil
+                mask = d <= R_okil  # True
+                
                 n_ij = np.count_nonzero(mask)
                 if n_ij == 0:
                     continue
@@ -674,15 +676,30 @@ class ObjectDetector:
                 # m_k = np.exp(-a * d[mask] ** 2 / (num_r * num_theta))
 
                 # Для m_k:
-                m_k = np.exp(-d[mask]**2 / self.zgrid_kernel_char_length_sq)
+                a = 10
+                m_k = np.exp(-a * d[mask] ** 2 / (num_r * num_theta))
+
+                # m_k = np.exp(-a * d[mask]**2 / self.zgrid_kernel_char_length_sq)
                 
-                z_grid[i, j] = (1 / np.sqrt(n_ij)) * np.sum((A_mask - A_avg) * m_k)
+                z_grid[i, j] = np.sum((A_mask - A_avg) * m_k) * (1 / np.sqrt(n_ij)) 
+
+                z_computation_details[(i, j)] = {
+                    "r_c": "{:.3f}".format(r_c),
+                    "theta_c": "{:.3f}".format(theta_c),
+                    "np.sum((A_mask - A_avg) * m_k)": "{:.3f}".format(np.sum((A_mask - A_avg) * m_k)),
+                    "n_ij": "{:3f}".format(n_ij),
+                    "R_okil": "{:3f}".format(R_okil),
+                    "A_avg": "{:3f}".format(A_avg),
+                    "z_grid": "{:3f}".format(z_grid[i, j])
+                }
+        
+        self.save_z_computation_details_to_file(z_computation_details, self.iteration)
 
         # Крок 2: Згладити z_grid ОДИН РАЗ, ПІСЛЯ того, як вона вся розрахована
-        from scipy.ndimage import gaussian_filter # Цей імпорт краще винести на початок файлу
-        z_grid_smoothed = gaussian_filter(z_grid, sigma=1.0) # Або спробуй sigma=0.5 для меншого розмиття
-        z_grid = z_grid_smoothed
-        logger.debug("Applied Gaussian filter to z_grid (once after full calculation).")
+        # from scipy.ndimage import gaussian_filter # Цей імпорт краще винести на початок файлу
+        # z_grid_smoothed = gaussian_filter(z_grid, sigma=1.0) # Або спробуй sigma=0.5 для меншого розмиття
+        # z_grid = z_grid_smoothed
+        # logger.debug("Applied Gaussian filter to z_grid (once after full calculation).")
 
 
         # Додаємо візуалізацію z_grid на кожній 5-й ітерації
@@ -697,6 +714,10 @@ class ObjectDetector:
         # ------- КЛЮЧОВІ ЗМІНИ: ЛОГАРИФМІЧНЕ ОБЧИСЛЕННЯ ВАГ -------
         logger.debug("Computing weights using logarithmic scale")
         log_weights = np.zeros(len(markers_state2))
+
+        # create w_computation_details, store info for each
+        # w_computation_details = {(1, 1): {"r": 1, "theta": 1, "r_center": 1, "theta_center": 1, "dist": 1, "h_ij": 1, "mu_ij": 1, "z_grid": 1, "sigma": 1, "exponent": 1}}
+        w_computation_details = {}
         
         for idx in range(len(markers_state2)):
             r = r_signals[idx]
@@ -709,31 +730,45 @@ class ObjectDetector:
                 for j in range(num_theta):
                     if z_grid[i, j] == 0:
                         continue
+
                         
                     r_center = r_centers[i]
                     theta_center = theta_centers[j]
                     
                     dist = np.sqrt(r**2 + r_center**2 - 2*r*r_center*np.cos(theta - theta_center))
-                    # h_ij = np.exp(-a * dist ** 2 / (num_r * num_theta))
+                    h_ij = np.exp(-a * dist ** 2 / (num_r * num_theta))
 
-                    
                     # Для h_ij (де dist - це відстань, а не її квадрат):
-                    h_ij = np.exp(-dist**2 / self.h_kernel_char_length_sq)
+                    # h_ij = np.exp(-dist**2 / self.h_kernel_char_length_sq)
                     
-                    if h_ij < 1e-10:
+                    if h_ij < 1e-4:
                         continue
                         
                     mu_ij = I_k * h_ij
                     
                     # Замість множення експонент додаємо їх показники
-                    # exponent = - (mu_ij * (mu_ij - 2 * z_grid[i, j])) / (2 * sigma ** 2)
-                    # exponent = (mu_ij * (mu_ij + 2 * z_grid[i, j])) / (2 * sigma_A_std ** 2) # Попередня версія
-                    # exponent = (mu_ij * z_grid[i, j]) / (sigma_A_std ** 2) # НОВА ПРОПОЗИЦІЯ
-                    K_scale = 0.01
-                    exponent = K_scale * (mu_ij * z_grid[i, j]) / (sigma_A_std ** 2)
+                    exponent = -(mu_ij * (mu_ij - 2 * z_grid[i, j])) / (2 * sigma_A_std ** 2)
                     log_L += exponent  # Ключова зміна тут!
+
+                    w_computation_details[(i, j)] = {
+                        "r": "{:0.3f}".format(r),
+                        "theta": "{:0.3f}".format(theta),
+                        "r_center": "{:0.3f}".format(r_center),
+                        "theta_center": "{:0.3f}".format(theta_center),
+                        "dist": "{:0.3f}".format(dist),
+                        "h_ij": "{:0.3f}".format(h_ij),
+                        "mu_ij": "{:0.3f}".format(mu_ij),
+                        "a": "{:0.3f}".format(a),
+                        "z_grid": "{:0.3f}".format(z_grid[i, j]),
+                        "sigma": "{:0.3f}".format(sigma_A_std),
+                        "exponent": "{:0.3f}".format(exponent),
+                        "exp(exponent)": "{:0.3f}".format(np.exp(exponent))
+                    }
             
             log_weights[idx] = log_L
+
+        # save w_computation_details_iteration to file
+        self.save_w_computation_details_to_file(w_computation_details, self.iteration)
         
         # ------- НОРМАЛІЗАЦІЯ ЛОГАРИФМІЧНИХ ВАГ -------
         # Використання "log-sum-exp trick" для уникнення переповнення при перетворенні назад
@@ -776,6 +811,15 @@ class ObjectDetector:
         return weights
 
 
+    def save_w_computation_details_to_file(self, w_computation_details, iteration):
+        with open(f"w_computation_details_iteration_{iteration}.txt", "w") as f:
+            for key, value in w_computation_details.items():
+                f.write(f"{key}: {value}\n")
+
+    def save_z_computation_details_to_file(self, z_computation_details, iteration):
+        with open(f"z_computation_details_iteration_{iteration}.txt", "w") as f:
+            for key, value in z_computation_details.items():
+                f.write(f"{key}: {value}\n")
 
     def compute_position_gaussian(self, markers, states, weights, t, sigma=0.5):
         """Обчислення позиції центру мас."""
@@ -1144,48 +1188,12 @@ class ObjectDetector:
                 self.visualize(markers, states, t, self.current_center)
                 
                 # Візуалізуємо функцію правдоподібності
-                self.visualize_likelihood(markers, states, weights, t)
-            
-            # FIXED: Замість видалення всіх маркерів стану 1, обмежуємо загальну кількість
-            # з балансом між маркерами стану 1 і 2
-            state1_mask = states == 1
+                # self.visualize_likelihood(markers, states, weights, t)
+
+            # Видалення шумових маркерів для їх повторного створення на новій ітерації
             state2_mask = states == 2
-            state1_count = np.sum(state1_mask)
-            state2_count = np.sum(state2_mask)
-            
-            logger.debug(f"Before marker management: {state1_count} in state 1, {state2_count} in state 2, total: {len(markers)}")
-            
-            # Якщо загальна кількість маркерів перевищує ліміт, потрібно зменшити їх кількість
-            if state1_count + state2_count > self.M:
-                # Обчислюємо цільовий розподіл маркерів: 30% стану 1, 70% стану 2
-                target_state1_count = int(self.M * 0.3)
-                target_state2_count = self.M - target_state1_count
-                
-                # Індекси маркерів стану 1 і 2
-                state1_indices = np.where(state1_mask)[0]
-                state2_indices = np.where(state2_mask)[0]
-                
-                # Випадково відбираємо маркери для збереження
-                if state1_count > target_state1_count:
-                    keep_state1_indices = np.random.choice(state1_indices, target_state1_count, replace=False)
-                else:
-                    keep_state1_indices = state1_indices
-                
-                if state2_count > target_state2_count:
-                    keep_state2_indices = np.random.choice(state2_indices, target_state2_count, replace=False)
-                else:
-                    keep_state2_indices = state2_indices
-                
-                # Об'єднуємо індекси маркерів для збереження
-                keep_indices = np.concatenate((keep_state1_indices, keep_state2_indices))
-                
-                # Оновлюємо маркери і стани
-                markers = markers[keep_indices]
-                states = states[keep_indices]
-                
-                logger.debug(f"Limited markers to {len(markers)}: {np.sum(states==1)} in state 1, {np.sum(states==2)} in state 2")
-            else:
-                logger.debug(f"No need to limit markers, current count: {len(markers)}")
+            markers = markers[state2_mask]
+            states = states[state2_mask]
 
         logger.info(f"Detection completed after {num_iterations} iterations")
         return markers, states
