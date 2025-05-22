@@ -33,7 +33,7 @@ matplotlib.set_loglevel('WARNING')  # або 'ERROR' для ще більш су
 class ObjectDetector:
     def __init__(self, search_radius=10, N0=100, M=200, noise_std=0.1,
                  prob_change_state=0.1, object_pos=(5, 1.65*np.pi),
-                 object_amplitude_range=(1500,2000), num_object_signals=100, amplitude_range=(200,800)):
+                 object_amplitude_range=(1500,2500), num_object_signals=20, amplitude_range=(200,1200)):
         if amplitude_range is None:
             amplitude_range = [200, 1200]
         self.search_radius = search_radius
@@ -187,14 +187,14 @@ class ObjectDetector:
         iteration: номер ітерації для назви файлу
         """
         # Створюємо 2 полярних графіка: звичайний і нормалізований
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), subplot_kw={'projection': 'polar'})
+        fig, ax1 = plt.subplots(1, 1, figsize=(6, 6), subplot_kw={'projection': 'polar'})
         
         # Створюємо координатну сітку для pcolormesh
         Theta, R = np.meshgrid(theta_edges, r_edges)
         
         # 1. Перший графік з оригінальними значеннями
         c1 = ax1.pcolormesh(Theta, R, z_grid, shading='auto', cmap='viridis')
-        ax1.set_title("Original z_grid")
+        ax1.set_title("Z-grid (інтенсивність клітинок)")
         fig.colorbar(c1, ax=ax1, label='z value')
         
         # Додаємо відмітку істинного положення об'єкта для порівняння (тільки для відображення)
@@ -219,17 +219,17 @@ class ObjectDetector:
         maxima = (z_smooth == z_max) & (z_smooth > 0.7)  # Порогування для знаходження значущих максимумів
         
         # Малюємо нормалізовану теплову карту
-        c2 = ax2.pcolormesh(Theta, R, z_smooth, shading='auto', cmap='viridis')
-        ax2.set_title("Normalized and Smoothed z_grid")
-        fig.colorbar(c2, ax=ax2, label='Normalized z value')
+        # c2 = ax2.pcolormesh(Theta, R, z_smooth, shading='auto', cmap='viridis')
+        # ax2.set_title("Normalized and Smoothed z_grid")
+        # fig.colorbar(c2, ax=ax2, label='Normalized z value')
         
         # Знаходимо координати локальних максимумів
         maxima_indices = np.where(maxima)
         if len(maxima_indices[0]) > 0:
             maxima_r = r_edges[maxima_indices[0]]
             maxima_theta = theta_edges[maxima_indices[1]]
-            ax2.scatter(maxima_theta, maxima_r, color='red', s=50, marker='x', label='Local Maxima')
-            ax2.legend()
+            # ax2.scatter(maxima_theta, maxima_r, color='red', s=50, marker='x', label='Local Maxima')
+            # ax2.legend()
             
             # Аналізуємо симетрію локальних максимумів
             if len(maxima_theta) > 1:
@@ -649,10 +649,11 @@ class ObjectDetector:
         
         I_k = (self.object_amplitude_range[0] + self.object_amplitude_range[1]) / 2
         z_grid = np.zeros((num_r, num_theta))
-        R_okil = 100  # all points
+        R_okil = 4
         
         # Обчислення z_grid (той самий код, як раніше)
         z_computation_details = {}
+        A_avg = amplitudes.mean()
         for i in range(num_r):
             for j in range(num_theta):
                 r_c = r_centers[i]
@@ -671,7 +672,7 @@ class ObjectDetector:
                     continue
                 
                 A_mask = amplitudes[mask]
-                A_avg = A_mask.mean()
+                # A_avg = A_mask.mean()
                 
                 # m_k = np.exp(-a * d[mask] ** 2 / (num_r * num_theta))
 
